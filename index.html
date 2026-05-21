@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waktu Solat Malaysia</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#FAF7F0;color:#1A1A1A;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}
+.wrap{width:100%;max-width:480px}
+header{text-align:center;padding:8px 0 12px}
+header h1{font-size:1.25rem;font-weight:700;color:#0F766E}
+header .subtitle{font-size:.8125rem;color:#555;margin-top:2px}
+header .hijri{font-size:.875rem;color:#0F766E;font-weight:600;margin-top:4px}
+.controls{margin:8px 0}
+select{width:100%;padding:10px 12px;border:1px solid rgba(15,118,110,.25);border-radius:8px;background:#fff;color:#1A1A1A;font-size:.9375rem;font-family:inherit;appearance:auto}
+.countdown{text-align:center;padding:14px 0;font-size:1.75rem;font-weight:700;color:#0F766E;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;min-height:2.5rem}
+.prayer-grid{border-top:1px solid rgba(0,0,0,.06)}
+.prayer-row{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 4px;border-bottom:1px solid rgba(0,0,0,.06);font-size:1rem;font-weight:500;align-items:center}
+.prayer-row.active{background:rgba(15,118,110,.1);border-radius:6px}
+.prayer-row.active .label{font-weight:700}
+.prayer-row .time{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:1.0625rem}
+.imsak-row{padding:6px 4px;font-size:.8125rem;color:#555;border-bottom:1px solid rgba(0,0,0,.04)}
+footer{text-align:center;font-size:.6875rem;color:#888;padding:16px 0 24px;line-height:1.5}
+a{color:#888;text-decoration:underline}
+.hidden{display:none!important}
+.err{text-align:center;padding:24px 16px;color:#c0392b;font-size:.9375rem}
+.err button{margin-top:12px;padding:8px 18px;background:#0F766E;color:#fff;border:none;border-radius:6px;font-size:.9375rem;font-family:inherit;cursor:pointer}
+.loader{text-align:center;padding:24px 0;font-size:1rem;color:#0F766E}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>🕌 Waktu Solat Malaysia</h1>
+  <p class="subtitle" id="subtitle">Memuatkan…</p>
+  <p class="hijri"  id="hijri">—</p>
+</header>
+
+<div class="controls">
+  <select id="zoneSelect" aria-label="Pilih zon JAKIM">
+    <option disabled>Memuatkan zon…</option>
+  </select>
+</div>
+
+<p class="countdown hidden" id="countdown">Solat seterusnya: — dalam —</p>
+<div class="prayer-grid" id="grid">
+  <div class="loader" id="loader">Memuatkan data JAKIM…</div>
+</div>
+<footer>Sumber: <a href="https://github.com/abualif120/malaysia-waktu-solat-dataset" target="_blank" rel="noopener">JAKIM e-Solat</a> (via abualif120/malaysia-waktu-solat-dataset, CC BY 4.0)</footer>
+</div>
+
+<script>
+(()=>{
+'use strict';
+
+const BM_DAY  =['Ahad','Isnin','Selasa','Rabu','Khamis','Jumaat','Sabtu'];
+const BM_MON  =['Januari','Februari','Mac','April','Mei','Jun','Julai','Ogos','September','Oktober','November','Disember'];
+const BM_HIJRI=['Muharram','Safar','Rabiulawal','Rabiulakhir','Jamadilawal','Jamadilakhir','Rejab','Syaaban','Ramadan','Syawal','Zulkaedah','Zulhijjah'];
+const SRC_CHANNEL='https://raw.githubusercontent.com/abualif120/malaysia-waktu-solat-dataset/main';
+
+const year = new Date().getFullYear();
+const todayISO = ()=> d=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const fmtBMDate = (d)=> `${BM_DAY[d.getDay()]}, ${d.getDate()} ${BM_MON[d.getMonth()]} ${d.getFullYear()}`;
+function pad(n){return String(n).padStart(2,'0')}
+
+let zones=[], tarikh={}, pt={}, currentZone='SGR01';
+let _timer=null;
+
+const ls={k:'ls',get(key,d){try{return JSON.parse(localStorage.getItem(this.k+key))??d}catch{return d}},set(key,v){try{localStorage.setItem(this.k+key,JSON.stringify(v))}catch{}}};
+function todayKey(){return 'wsl_pt_'+new Date().getFullYear()}
+
+function cacheOK(){
+  const cachedYear = ls.get('wsl_year');
+  return cachedYear === year && zones.length && pt.rows;
+}
+
+async function fetchJSON(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function loadData(force){
+  if(!force && cacheOK()) return;
+  const [z, t, p] = await Promise.all([
+    fetchJSON(`${SRC_CHANNEL}/data/zones.json`),
+    fetchJSON(`${SRC_CHANNEL}/data/tarikh.json`),
+    fetchJSON(`${SRC_CHANNEL}/data/by_year/prayer_times_${year}.json`)
+  ]);
+  zones = z.zones || [];
+  tarikh = t.tarikh ? {rows:t.tarikh} : t;
+  pt     = p.prayer_times ? {rows:p.prayer_times} : p;
+  ls.set('wsl_zones',  {ts:Date.now(), v:zones});
+  ls.set('wsl_tarikh', {ts:Date.now(), v:tarikh});
+  ls.set(todayKey(),   {ts:Date.now(), v:pt});
+  ls.set('wsl_year',   year);
+  ls.set('wsl_zone',   currentZone);
+}
+
+function getTodayRow(){
+  const iso = new Date().toISOString().slice(0,10);
+  const row = (pt.rows||[]).find(r=>r.date===iso && r.zone===currentZone);
+  if(row) return row;
+  const tomorrow = new Date(Date.now()+86400000).toISOString().slice(0,10);
+  return (pt.rows||[]).find(r=>r.date===tomorrow && r.zone===currentZone) || null;
+}
+
+function getHijri(){
+  const iso = new Date().toISOString().slice(0,10);
+  const entry = (tarikh.rows||[]).find(t=>t.gregorian===iso);
+  if(!entry) return null;
+  const [y,m,d] = entry.hijri.split('-').map(Number);
+  return `${d} ${BM_HIJRI[m-1]} ${y}H`;
+}
+
+function parseTime(str){
+  if(!str) return null;
+  const[h,mi]=str.split(':').map(Number);
+  return h*60+mi;
+}
+
+function minsSinceMidnight(d){return d.getHours()*60+d.getMinutes()}
+
+function activeAndNextPrayer(row){
+  if(!row) return {active:null,next:{name:'Subuh',mins:null,tomorrow:true}};
+  const entries = ['Imsak','Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak']
+    .map(n=>({name:n, mins: row[n]?parseTime(row[n]):null}))
+    .filter(e=>e.mins!==null);
+  if(entries.length<2) return {active:null,next:{name:'Subuh',mins:null,tomorrow:true}};
+  const now = minsSinceMidnight();
+  let active=entries[0], next=entries[1];
+  for(let i=0;i<entries.length;i++){
+    if(entries[i].mins <= now) active=entries[i];
+    if(entries[i].mins > now){ next=entries[i]; break; }
+  }
+  if(entries[entries.length-1].mins <= now) next={name:'Subuh',mins:null,tomorrow:true};
+  return {active,next};
+}
+
+function diffString(targetMins, nowMins){
+  let diff = targetMins - nowMins;
+  if(diff < 0) diff += 1440;
+  const h=Math.floor(diff/60), m=diff%60, s=60-(new Date().getSeconds()%60);
+  const sc = s===60 ? 0 : s;
+  return `${pad(h)}:${pad(m)}:${pad(sc)}`;
+}
+
+const $p=s=>document.querySelector(s);
+
+function renderZoneSelect(){
+  const sel = $p('#zoneSelect');
+  sel.innerHTML='';
+  const groups={};
+  zones.forEach(z=>{ (groups[z.state]||(groups[z.state]=[])).push(z) });
+  Object.keys(groups).sort().forEach(state=>{
+    const og=document.createElement('optgroup');
+    og.label=state;
+    groups[state].forEach(z=>{
+      const o=document.createElement('option');
+      o.value=z.zone;
+      o.textContent=z.zone+' — '+z.location;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  });
+  const saved = ls.get('wsl_zone') || 'SGR01';
+  const found = zones.find(z=>z.zone===saved);
+  currentZone = found ? saved : 'SGR01';
+  sel.value = currentZone;
+}
+
+function renderSubtitle(){ $p('#subtitle').textContent = fmtBMDate(new Date()); }
+function renderHijri(){
+  const h = getHijri();
+  $p('#hijri').textContent = h ? h : '—';
+}
+
+function renderGrid(){
+  const grid = $p('#grid');
+  const cd   = $p('#countdown');
+  if(new Date().getFullYear() > 2027){
+    grid.innerHTML='<div class="err">Data JAKIM hanya sampai 2027-12-31. Sila tunggu update.</div>';
+    cd.classList.add('hidden'); return;
+  }
+  const row = getTodayRow();
+  if(!row){
+    grid.innerHTML='<div class="err">Tiada data untuk zon ini. Sila pilih zon lain.</div>';
+    cd.classList.add('hidden'); return;
+  }
+  grid.innerHTML='';
+  if(row.Imsak){
+    const d=document.createElement('div');
+    d.className='imsak-row';
+    d.textContent=`${row.Imsak}  Imsak`;
+    grid.appendChild(d);
+  }
+  const display = ['Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak'];
+  const {active, next} = activeAndNextPrayer(row);
+  display.forEach(name=>{
+    const time = row[name] || '—';
+    const d=document.createElement('div');
+    d.className='prayer-row'+(active && active.name===name ? ' active' : '');
+    d.innerHTML=`<span class="label">${name}</span><span class="time">${time}</span>`;
+    grid.appendChild(d);
+  });
+  cd.classList.remove('hidden');
+  function tick(){
+    if(next.tomorrow){
+      cd.textContent='Solat seterusnya: Subuh dalam —'; return;
+    }
+    cd.textContent='Solat seterusnya: '+next.name+' dalam '+diffString(next.mins);
+  }
+  tick();
+  if(_timer) clearInterval(_timer);
+  _timer=setInterval(tick,1000);
+}
+
+async function init(){
+  renderSubtitle();
+  const loader = $p('#loader');
+  const errDiv=document.createElement('div');
+  errDiv.className='err';
+  try{
+    if(!cacheOK()) await loadData(false);
+    else{
+      const cz=ls.get('wsl_zones');  if(cz) zones=cz.v||[];
+      const ct=ls.get('wsl_tarikh'); if(ct) tarikh=ct.v||{};
+      const savedZone=ls.get('wsl_zone')||'SGR01';
+      currentZone = zones.find(z=>z.zone===savedZone) ? savedZone : 'SGR01';
+      pt=ls.get(todayKey())?ls.get(todayKey()).v:{};
+    }
+    renderSubtitle(); renderHijri(); renderZoneSelect();
+    $p('#zoneSelect').addEventListener('change',e=>{
+      currentZone=e.target.value;
+      ls.set('wsl_zone',currentZone);
+      if(pt.rows) pt=ls.get(todayKey())?ls.get(todayKey()).v:{};
+      renderGrid();
+    });
+    renderGrid();
+    loader.classList.add('hidden');
+  }catch(e){
+    loader.classList.add('hidden');
+    errDiv.innerHTML='<div>❌ Gagal memuat data JAKIM.</div><div>Sila semak sambungan internet dan cuba semula.</div><button onclick="location.reload()">🔄 Cuba semula</button>';
+    document.getElementById('grid').appendChild(errDiv);
+    $p('#countdown').classList.add('hidden');
+  }
+  setInterval(()=>{renderSubtitle();renderHijri();if(pt.rows)renderGrid()},1000);
+}
+
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);
+else init();
+})();
+</script>
+</body>
+</html>
