@@ -55,202 +55,268 @@ a{color:#888;text-decoration:underline}
 (()=>{
 'use strict';
 
+// ─── Constants ───────────────────────────────────────
 const BM_DAY  =['Ahad','Isnin','Selasa','Rabu','Khamis','Jumaat','Sabtu'];
 const BM_MON  =['Januari','Februari','Mac','April','Mei','Jun','Julai','Ogos','September','Oktober','November','Disember'];
 const BM_HIJRI=['Muharram','Safar','Rabiulawal','Rabiulakhir','Jamadilawal','Jamadilakhir','Rejab','Syaaban','Ramadan','Syawal','Zulkaedah','Zulhijjah'];
 const SRC_CHANNEL='https://raw.githubusercontent.com/abualif120/malaysia-waktu-solat-dataset/main';
 
-const year = new Date().getFullYear();
-const todayISO = ()=> d=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-const fmtBMDate = (d)=> `${BM_DAY[d.getDay()]}, ${d.getDate()} ${BM_MON[d.getMonth()]} ${d.getFullYear()}`;
+const YEAR = new Date().getFullYear();
+
 function pad(n){return String(n).padStart(2,'0')}
+function fmtBMDate(d){return `${BM_DAY[d.getDay()]}, ${d.getDate()} ${BM_MON[d.getMonth()]} ${d.getFullYear()}`}
+function todayISO(){return `${new Date().getFullYear()}-${pad(new Date().getMonth()+1)}-${pad(new Date().getDate())}`}
+function cacheKeyYear(){return 'wsl_pt_'+YEAR}
 
-let zones=[], tarikh={}, pt={}, currentZone='SGR01';
+// ─── State ───────────────────────────────────────────
+let zones=[], tarikhRows=[], ptRows=[], currentZone='SGR01';
 let _timer=null;
+let _dataLoaded=false;
 
-const ls={k:'ls',get(key,d){try{return JSON.parse(localStorage.getItem(this.k+key))??d}catch{return d}},set(key,v){try{localStorage.setItem(this.k+key,JSON.stringify(v))}catch{}}};
-function todayKey(){return 'wsl_pt_'+new Date().getFullYear()}
+// ─── Storage ─────────────────────────────────────────
+const ls = {
+  get(key, def){ try { return JSON.parse(localStorage.getItem(key)) ?? def } catch { return def } },
+  set(key, val){ try { localStorage.setItem(key, JSON.stringify(val)) } catch {} }
+};
 
-function cacheOK(){
-  const cachedYear = ls.get('wsl_year');
-  return cachedYear === year && zones.length && pt.rows;
+function dataOK(){
+  return ls.get('wsl_year') === YEAR
+    && Array.isArray(zones) && zones.length
+    && Array.isArray(ptRows) && ptRows.length;
 }
 
+// ─── Fetch ───────────────────────────────────────────
 async function fetchJSON(url){
   const r = await fetch(url);
-  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  if(!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
   return r.json();
 }
 
-async function loadData(force){
-  if(!force && cacheOK()) return;
+async function loadAll(){
   const [z, t, p] = await Promise.all([
     fetchJSON(`${SRC_CHANNEL}/data/zones.json`),
     fetchJSON(`${SRC_CHANNEL}/data/tarikh.json`),
-    fetchJSON(`${SRC_CHANNEL}/data/by_year/prayer_times_${year}.json`)
+    fetchJSON(`${SRC_CHANNEL}/data/by_year/prayer_times_${YEAR}.json`)
   ]);
   zones = z.zones || [];
-  tarikh = t.tarikh ? {rows:t.tarikh} : t;
-  pt     = p.prayer_times ? {rows:p.prayer_times} : p;
-  ls.set('wsl_zones',  {ts:Date.now(), v:zones});
-  ls.set('wsl_tarikh', {ts:Date.now(), v:tarikh});
-  ls.set(todayKey(),   {ts:Date.now(), v:pt});
-  ls.set('wsl_year',   year);
-  ls.set('wsl_zone',   currentZone);
+  tarikhRows = (t.tarikh || t.rows || []).map(r => ({
+    gregorian: r.gregorian,
+    hijri: r.hijri,
+    day: r.day
+  }));
+  ptRows = (p.prayer_times || p.rows || []).map(r => ({
+    zone: r.zone,
+    date: r.date,
+    day: r.day,
+    imsak:   r.imsak   || '',
+    subuh:   r.subuh   || '',
+    syuruk:  r.syuruk  || '',
+    dhuha:   r.dhuha   || '',
+    zohor:   r.zohor   || '',
+    asar:    r.asar    || '',
+    maghrib: r.maghrib || '',
+    isyak:   r.isyak   || ''
+  }));
+
+  ls.set('wsl_zones',   {ts: Date.now(), v: zones});
+  ls.set('wsl_tarikh',  {ts: Date.now(), v: tarikhRows});
+  ls.set(cacheKeyYear(),{ts: Date.now(), v: ptRows});
+  ls.set('wsl_year',    YEAR);
+  _dataLoaded = true;
 }
 
-function getTodayRow(){
-  const iso = new Date().toISOString().slice(0,10);
-  const row = (pt.rows||[]).find(r=>r.date===iso && r.zone===currentZone);
-  if(row) return row;
-  const tomorrow = new Date(Date.now()+86400000).toISOString().slice(0,10);
-  return (pt.rows||[]).find(r=>r.date===tomorrow && r.zone===currentZone) || null;
+function loadFromCache(){
+  const cz = ls.get('wsl_zones');   if(cz) zones   = cz.v || zones;
+  const ct = ls.get('wsl_tarikh');  if(ct) tarikhRows = ct.v || tarikhRows;
+  const cp = ls.get(cacheKeyYear()); if(cp) ptRows  = cp.v || ptRows;
+  const sv = ls.get('wsl_zone') || 'SGR01';
+  currentZone = zones.find(z => z.zone === sv) ? sv : 'SGR01';
 }
+
+// ─── Helpers ─────────────────────────────────────────
+function $p(s){ return document.querySelector(s) }
 
 function getHijri(){
-  const iso = new Date().toISOString().slice(0,10);
-  const entry = (tarikh.rows||[]).find(t=>t.gregorian===iso);
-  if(!entry) return null;
-  const [y,m,d] = entry.hijri.split('-').map(Number);
+  const iso = todayISO();
+  const e = tarikhRows.find(t => t.gregorian === iso);
+  if(!e) return '—';
+  const [y,m,d] = e.hijri.split('-').map(Number);
   return `${d} ${BM_HIJRI[m-1]} ${y}H`;
 }
 
-function parseTime(str){
+function parseMin(str){
   if(!str) return null;
-  const[h,mi]=str.split(':').map(Number);
-  return h*60+mi;
+  const [h,mi] = str.split(':').map(Number);
+  return isNaN(h) || isNaN(mi) ? null : h*60+mi;
 }
 
-function minsSinceMidnight(d){return d.getHours()*60+d.getMinutes()}
+function nowMins(){ return new Date().getHours()*60 + new Date().getMinutes() }
 
-function activeAndNextPrayer(row){
-  if(!row) return {active:null,next:{name:'Subuh',mins:null,tomorrow:true}};
-  const entries = ['Imsak','Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak']
-    .map(n=>({name:n, mins: row[n]?parseTime(row[n]):null}))
-    .filter(e=>e.mins!==null);
-  if(entries.length<2) return {active:null,next:{name:'Subuh',mins:null,tomorrow:true}};
-  const now = minsSinceMidnight();
+function getTodayRow(){
+  const iso = todayISO();
+  let row = ptRows.find(r => r.date === iso && r.zone === currentZone);
+  if(row) return row;
+  // after midnight, try tomorrow
+  const d = new Date(); d.setDate(d.getDate()+1);
+  const tmrw = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  row = ptRows.find(r => r.date === tmrw && r.zone === currentZone);
+  return row || null;
+}
+
+function getActiveAndNext(row){
+  if(!row) return {active:null, next:{name:'Subuh',tomorrow:true}};
+  const entries=['Imsak','Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak']
+    .map(n=>({name:n, mins: parseMin(row[n])}))
+    .filter(e => e.mins !== null);
+  if(entries.length < 2) return {active:null, next:{name:'Subuh',tomorrow:true}};
+  const nm = nowMins();
   let active=entries[0], next=entries[1];
+  // advance active to last that has passed
   for(let i=0;i<entries.length;i++){
-    if(entries[i].mins <= now) active=entries[i];
-    if(entries[i].mins > now){ next=entries[i]; break; }
+    if(entries[i].mins <= nm) active=entries[i];
+    if(entries[i].mins > nm){ next=entries[i]; break; }
   }
-  if(entries[entries.length-1].mins <= now) next={name:'Subuh',mins:null,tomorrow:true};
-  return {active,next};
+  // past last prayer: next is tomorrow's first
+  if(entries[entries.length-1].mins <= nm) return {active, next:{name:'Subuh',tomorrow:true}};
+  return {active, next};
 }
 
-function diffString(targetMins, nowMins){
-  let diff = targetMins - nowMins;
-  if(diff < 0) diff += 1440;
-  const h=Math.floor(diff/60), m=diff%60, s=60-(new Date().getSeconds()%60);
-  const sc = s===60 ? 0 : s;
+function countdownStr(targetMins){
+  const nm = nowMins();
+  let diff = targetMins - nm;
+  if(diff <= 0) diff += 1440;
+  const h=Math.floor(diff/60), m=diff%60, s=60-new Date().getSeconds()%60;
+  const sc = s===60 ? 0 : s ;
   return `${pad(h)}:${pad(m)}:${pad(sc)}`;
 }
 
-const $p=s=>document.querySelector(s);
+// ─── Render ───────────────────────────────────────────
+function renderSubtitle(){
+  $p('#subtitle').textContent = fmtBMDate(new Date());
+}
+
+function renderHijri(){
+  $p('#hijri').textContent = getHijri();
+}
 
 function renderZoneSelect(){
   const sel = $p('#zoneSelect');
-  sel.innerHTML='';
-  const groups={};
-  zones.forEach(z=>{ (groups[z.state]||(groups[z.state]=[])).push(z) });
-  Object.keys(groups).sort().forEach(state=>{
-    const og=document.createElement('optgroup');
-    og.label=state;
-    groups[state].forEach(z=>{
-      const o=document.createElement('option');
-      o.value=z.zone;
-      o.textContent=z.zone+' — '+z.location;
+  sel.innerHTML = '';
+  const groups = {};
+  zones.forEach(z => { (groups[z.state] || (groups[z.state]=[])).push(z) });
+  Object.keys(groups).sort().forEach(state => {
+    const og = document.createElement('optgroup');
+    og.label = state;
+    groups[state].forEach(z => {
+      const o = document.createElement('option');
+      o.value = z.zone;
+      o.textContent = z.zone + ' — ' + z.location;
       og.appendChild(o);
     });
     sel.appendChild(og);
   });
-  const saved = ls.get('wsl_zone') || 'SGR01';
-  const found = zones.find(z=>z.zone===saved);
-  currentZone = found ? saved : 'SGR01';
+  const found = zones.find(z => z.zone === currentZone);
+  currentZone = found ? currentZone : 'SGR01';
+  sel.value = currentZone;
+  // restore saved zone if it still exists
+  const saved = ls.get('wsl_zone');
+  if(saved && zones.find(z => z.zone === saved)) currentZone = saved;
   sel.value = currentZone;
 }
 
-function renderSubtitle(){ $p('#subtitle').textContent = fmtBMDate(new Date()); }
-function renderHijri(){
-  const h = getHijri();
-  $p('#hijri').textContent = h ? h : '—';
-}
+let _activePrayerName = null;
+let _nextPrayer = null;
 
 function renderGrid(){
   const grid = $p('#grid');
   const cd   = $p('#countdown');
-  if(new Date().getFullYear() > 2027){
-    grid.innerHTML='<div class="err">Data JAKIM hanya sampai 2027-12-31. Sila tunggu update.</div>';
+
+  if(YEAR > 2027){
+    grid.innerHTML = '<div class="err">Data JAKIM hanya sampai 2027-12-31. Sila tunggu update.</div>';
     cd.classList.add('hidden'); return;
   }
+
   const row = getTodayRow();
   if(!row){
-    grid.innerHTML='<div class="err">Tiada data untuk zon ini. Sila pilih zon lain.</div>';
+    grid.innerHTML = '<div class="err">Tiada data untuk zon ini. Sila pilih zon lain.</div>';
     cd.classList.add('hidden'); return;
   }
-  grid.innerHTML='';
-  if(row.Imsak){
-    const d=document.createElement('div');
-    d.className='imsak-row';
-    d.textContent=`${row.Imsak}  Imsak`;
+
+  grid.innerHTML = '';
+  if(row.imsak){
+    const d = document.createElement('div');
+    d.className = 'imsak-row';
+    d.textContent = `${row.imsak}  Imsak`;
     grid.appendChild(d);
   }
-  const display = ['Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak'];
-  const {active, next} = activeAndNextPrayer(row);
+
+  const display=['Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak'];
+  const {active, next} = getActiveAndNext(row);
+  _activePrayerName = active ? active.name : null;
+  _nextPrayer = next;
+
   display.forEach(name=>{
-    const time = row[name] || '—';
-    const d=document.createElement('div');
-    d.className='prayer-row'+(active && active.name===name ? ' active' : '');
-    d.innerHTML=`<span class="label">${name}</span><span class="time">${time}</span>`;
+    // key is lowercase in the row object
+    const time = row[name.toLowerCase()] || '—';
+    const isActive = active && active.name === name;
+    const d = document.createElement('div');
+    d.className = 'prayer-row' + (isActive ? ' active' : '');
+    d.innerHTML = `<span class="label">${name}</span><span class="time">${time}</span>`;
     grid.appendChild(d);
   });
+
   cd.classList.remove('hidden');
   function tick(){
-    if(next.tomorrow){
+    if(_nextPrayer.tomorrow){
       cd.textContent='Solat seterusnya: Subuh dalam —'; return;
     }
-    cd.textContent='Solat seterusnya: '+next.name+' dalam '+diffString(next.mins);
+    cd.textContent='Solat seterusnya: '+_nextPrayer.name+' dalam '+countdownStr(_nextPrayer.mins);
   }
-  tick();
   if(_timer) clearInterval(_timer);
-  _timer=setInterval(tick,1000);
+  tick();
+  _timer = setInterval(tick, 1000);
 }
 
+// ─── Init ─────────────────────────────────────────────
 async function init(){
   renderSubtitle();
   const loader = $p('#loader');
-  const errDiv=document.createElement('div');
-  errDiv.className='err';
+  const errDiv = document.createElement('div');
+  errDiv.className = 'err';
+
   try{
-    if(!cacheOK()) await loadData(false);
-    else{
-      const cz=ls.get('wsl_zones');  if(cz) zones=cz.v||[];
-      const ct=ls.get('wsl_tarikh'); if(ct) tarikh=ct.v||{};
-      const savedZone=ls.get('wsl_zone')||'SGR01';
-      currentZone = zones.find(z=>z.zone===savedZone) ? savedZone : 'SGR01';
-      pt=ls.get(todayKey())?ls.get(todayKey()).v:{};
+    if(!_dataLoaded && !dataOK()){
+      await loadAll();
+    }else{
+      loadFromCache();
+      _dataLoaded = true;
     }
     renderSubtitle(); renderHijri(); renderZoneSelect();
-    $p('#zoneSelect').addEventListener('change',e=>{
-      currentZone=e.target.value;
-      ls.set('wsl_zone',currentZone);
-      if(pt.rows) pt=ls.get(todayKey())?ls.get(todayKey()).v:{};
-      renderGrid();
-    });
     renderGrid();
     loader.classList.add('hidden');
+
+    $p('#zoneSelect').addEventListener('change', e=>{
+      currentZone = e.target.value;
+      ls.set('wsl_zone', currentZone);
+      renderGrid();
+    });
+
+    // re-render clock each second (midnight rollover)
+    setInterval(()=>{ if(_dataLoaded){ renderSubtitle(); renderHijri(); renderGrid(); } }, 1000);
   }catch(e){
     loader.classList.add('hidden');
-    errDiv.innerHTML='<div>❌ Gagal memuat data JAKIM.</div><div>Sila semak sambungan internet dan cuba semula.</div><button onclick="location.reload()">🔄 Cuba semula</button>';
+    errDiv.innerHTML=
+      '<div>❌ Gagal memuat data JAKIM.</div>' +
+      '<div>Sila semak sambungan internet dan cuba semula.</div>' +
+      '<button onclick="location.reload()">🔄 Cuba semula</button>';
     document.getElementById('grid').appendChild(errDiv);
     $p('#countdown').classList.add('hidden');
   }
-  setInterval(()=>{renderSubtitle();renderHijri();if(pt.rows)renderGrid()},1000);
 }
 
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
 else init();
+
 })();
 </script>
 </body>
