@@ -165,19 +165,19 @@ function getTodayRow(){
 
 function getActiveAndNext(row){
   if(!row) return {active:null, next:{name:'Subuh',tomorrow:true}};
+  // row keys are lowercase; entries use TitleCase display names
   const entries=['Imsak','Subuh','Syuruk','Zohor','Asar','Maghrib','Isyak']
-    .map(n=>({name:n, mins: parseMin(row[n])}))
+    .map(n=>({name:n, mins: parseMin(row[n.toLowerCase()])}))
     .filter(e => e.mins !== null);
   if(entries.length < 2) return {active:null, next:{name:'Subuh',tomorrow:true}};
   const nm = nowMins();
-  let active=entries[0], next=entries[1];
-  // advance active to last that has passed
-  for(let i=0;i<entries.length;i++){
-    if(entries[i].mins <= nm) active=entries[i];
-    if(entries[i].mins > nm){ next=entries[i]; break; }
+  const sorted=[...entries].sort((a,b)=>a.mins-b.mins);
+  let active=sorted[0], next=sorted[1];
+  for(let i=0;i<sorted.length;i++){
+    if(sorted[i].mins <= nm) active=sorted[i];
+    if(sorted[i].mins > nm){ next=sorted[i]; break; }
   }
-  // past last prayer: next is tomorrow's first
-  if(entries[entries.length-1].mins <= nm) return {active, next:{name:'Subuh',tomorrow:true}};
+  if(sorted[sorted.length-1].mins <= nm) return {active, next:{name:'Subuh',tomorrow:true}};
   return {active, next};
 }
 
